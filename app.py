@@ -24,7 +24,7 @@ def load_data():
 df = load_data()
 
 # --------------------------------------------------
-# CONTENT-BASED FILTERING
+# CONTENT-BASED FILTERING (TF-IDF)
 # --------------------------------------------------
 @st.cache_data
 def build_similarity(data):
@@ -46,7 +46,7 @@ def content_recommend(movie, n=10):
     return df.iloc[indices]["title"].unique()
 
 # --------------------------------------------------
-# SVD COLLABORATIVE FILTERING
+# COLLABORATIVE FILTERING (SAFE SVD)
 # --------------------------------------------------
 @st.cache_resource
 def build_svd(data):
@@ -56,7 +56,11 @@ def build_svd(data):
         values="rating"
     ).fillna(0)
 
-    svd = TruncatedSVD(n_components=20, random_state=132629)
+    # 🔑 CRITICAL FIX
+    max_components = min(matrix.shape[0], matrix.shape[1]) - 1
+    n_components = min(20, max_components)
+
+    svd = TruncatedSVD(n_components=n_components, random_state=132629)
     latent = svd.fit_transform(matrix)
     reconstructed = np.dot(latent, svd.components_)
 
@@ -84,7 +88,7 @@ def svd_recommend(user_id, n=10):
     return df[df["movieId"].isin(top_ids)]["title"].unique()
 
 # --------------------------------------------------
-# UI
+# STREAMLIT UI
 # --------------------------------------------------
 choice = st.radio(
     "Select Recommendation Type",
@@ -120,4 +124,4 @@ else:
                 st.write(f"{i}. {m}")
 
 st.markdown("---")
-
+st.caption("TF-IDF Content Filtering + Robust SVD Collaborative Filtering")
