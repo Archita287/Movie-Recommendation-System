@@ -7,81 +7,109 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.decomposition import TruncatedSVD
 from sklearn.preprocessing import MinMaxScaler
 
-st.set_page_config(page_title="Movie Recommendation System")
+# ---------------- PAGE CONFIG ----------------
+st.set_page_config(page_title="Movie Recommendation System", layout="wide")
 st.title("🎬 Movie Recommendation System")
 
+# ---------------- LOAD DATA ----------------
 @st.cache_data
 def load_data():
-    url = "https://raw.githubusercontent.com/Archita287/Movie-Recommendation-System/main/sampled_movies_ratings.csv"
-    df = pd.read_csv(url)
+    df = pd.read_csv("sampled_movies_ratings.csv")
     df = df.dropna()
     df["genres"] = df["genres"].str.replace("|", " ", regex=False)
     return df
 
 df = load_data()
 
-# ---------- CONTENT BASED (TF-IDF) ----------
+# ---------------- TF-IDF SIMILARITY ----------------
 @st.cache_data
-def build_similarity(data):
+def build_tfidf_similarity(data):
     tfidf = TfidfVectorizer(stop_words="english")
     tfidf_matrix = tfidf.fit_transform(data["genres"])
-    return cosine_similarity(tfidf_matrix)
+    cosine_sim = cosine_similarity(tfidf_matrix)
+    return cosine_sim
 
-cosine_sim = build_similarity(df)
+cosine_sim = build_tfidf_similarity(df)
 
-def content_recommend(movie, n=10):
-    idx = df[df["title"] == movie].index[0]
-    scores = list(enumerate(cosine_sim[idx]))
-    scores = sorted(scores, key=lambda x: x[1], reverse=True)[1:n+1]
-    return df["title"].iloc[[i[0] for i in scores]].values
+movie_indices = pd.Series(df.index, index=df["title"]).drop_duplicates()
 
-# ---------- COLLABORATIVE (SVD using sklearn) ----------
-@st.cache_resource
+def recommend_content(movie_title, n=5):
+    idx = movie_indices[movie_title]
+    sim_scores = list(enumerate(cosine_sim[idx]))
+    sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)[1:n+1]
+    movie_idxs = [i[0] for i in sim_scores]
+    return df.iloc[movie_idxs][["title", "genres"]]
+
+# ---------------- SVD COLLABORATIVE FILTERING ----------------
+@st.cache_data
 def build_svd(data):
-    matrix = data.pivot_table(
-        index="userId", columns="movieId", values="rating"
+    user_movie = data.pivot_table(
+        index="userId",
+        columns="movieId",
+        values="rating"
     ).fillna(0)
 
-    svd = TruncatedSVD(n_components=20, random_state=132629)
-    latent = svd.fit_transform(matrix)
-    reconstructed = np.dot(latent, svd.components_)
+    svd = TruncatedSVD(n_components=20, random_state=42)
+    matrix_reduced = svd.fit_transform(user_movie)
 
-    scaler = MinMaxScaler((0.5, 5))
-    reconstructed = scaler.fit_transform(reconstructed)
-
-    return pd.DataFrame(
-        reconstructed, index=matrix.index, columns=matrix.columns
+    reconstructed = np.dot(matrix_reduced, svd.components_)
+    reconstructed_df = pd.DataFrame(
+        reconstructed,
+        index=user_movie.index,
+        columns=user_movie.columns
     )
 
-predicted = build_svd(df)
+    scaler = MinMaxScaler()
+    reconstructed_df[:] = scaler.fit_transform(reconstructed_df)
 
-def svd_recommend(user_id, n=10):
-    top_ids = (
-        predicted.loc[user_id]
-        .sort_values(ascending=False)
-        .head(n)
-        .index
-    )
-    return df[df["movieId"].isin(top_ids)]["title"].unique()
+    return reconstructed_df
 
-# ---------- UI ----------
-choice = st.radio(
-    "Select Recommendation Type",
-    ["Content-Based (Genres)", "Collaborative Filtering (SVD)"]
+svd_predictions = build_svd(df)
+
+def recommend_user(user_id, n=5):
+    if user_id not in svd_predictions.index:
+        return None
+
+    user_ratings = svd_predictions.loc[user_id].sort_values(ascending=False)
+    top_movies = user_ratings.head(n).index
+
+    return df[df["movieId"].isin(top_movies)][["title", "genres"]].drop_duplicates()
+
+# ---------------- STREAMLIT UI ----------------
+st.sidebar.header("🔍 Recommendation Type")
+option = st.sidebar.radio(
+    "Choose Recommendation Method",
+    ("Content-Based (Movie Similarity)", "Collaborative (User-Based)")
 )
 
-if choice == "Content-Based (Genres)":
-    movie = st.selectbox("Select Movie", sorted(df["title"].unique()))
-    if st.button("Recommend"):
-        for i, m in enumerate(content_recommend(movie), 1):
-            st.write(f"{i}. {m}")
-else:
-    user = st.number_input(
-        "Enter User ID",
-        min_value=int(df["userId"].min()),
-        max_value=int(df["userId"].max()),
-        step=1
+# -------- CONTENT BASED UI --------
+if option == "Content-Based (Movie Similarity)":
+    st.subheader("🎥 Content-Based Recommendation")
+
+    movie_name = st.selectbox(
+        "Select a movie",
+        sorted(df["title"].unique())
     )
-    if st.button("Recommend"):
-        for i, m in enumerate(svd_recommend(user), 1):
-            st.write(f"{i}. {m}")
+
+    if st.button("Recommend Similar Movies"):
+        recommendations = recommend_content(movie_name)
+        st.success("Recommended Movies:")
+        st.dataframe(recommendations)
+
+# -------- USER BASED UI --------
+else:
+    st.subheader("👤 User-Based Recommendation (SVD)")
+
+    user_id = st.selectbox(
+        "Select User ID",
+        sorted(df["userId"].unique())
+    )
+
+    if st.button("Recommend Movies"):
+        recs = recommend_user(user_id)
+
+        if recs is None:
+            st.error("User not found!")
+        else:
+            st.success("Recommended Movies:")
+            st.dataframe(recs)
