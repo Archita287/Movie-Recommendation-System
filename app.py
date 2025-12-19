@@ -24,7 +24,7 @@ def load_data():
 df = load_data()
 
 # --------------------------------------------------
-# CONTENT-BASED FILTERING (TF-IDF)
+# CONTENT-BASED (TF-IDF)
 # --------------------------------------------------
 @st.cache_data
 def build_similarity(data):
@@ -46,49 +46,51 @@ def content_recommend(movie, n=10):
     return df.iloc[indices]["title"].unique()
 
 # --------------------------------------------------
-# COLLABORATIVE FILTERING (SAFE SVD)
+# SAFE SVD (BUILT ONLY ON DEMAND)
 # --------------------------------------------------
-@st.cache_resource
-def build_svd(data):
-    matrix = data.pivot_table(
-        index="userId",
-        columns="movieId",
-        values="rating"
-    ).fillna(0)
-
-    # 🔑 CRITICAL FIX
-    max_components = min(matrix.shape[0], matrix.shape[1]) - 1
-    n_components = min(20, max_components)
-
-    svd = TruncatedSVD(n_components=n_components, random_state=132629)
-    latent = svd.fit_transform(matrix)
-    reconstructed = np.dot(latent, svd.components_)
-
-    scaler = MinMaxScaler(feature_range=(0.5, 5))
-    reconstructed = scaler.fit_transform(reconstructed)
-
-    return pd.DataFrame(
-        reconstructed,
-        index=matrix.index,
-        columns=matrix.columns
-    )
-
-predicted = build_svd(df)
-
 def svd_recommend(user_id, n=10):
-    if user_id not in predicted.index:
-        return None
+    try:
+        matrix = df.pivot_table(
+            index="userId",
+            columns="movieId",
+            values="rating"
+        ).fillna(0)
 
-    top_ids = (
-        predicted.loc[user_id]
-        .sort_values(ascending=False)
-        .head(n)
-        .index
-    )
-    return df[df["movieId"].isin(top_ids)]["title"].unique()
+        if user_id not in matrix.index:
+            return None
+
+        max_components = min(matrix.shape) - 1
+        n_components = min(10, max_components)
+
+        svd = TruncatedSVD(n_components=n_components, random_state=132629)
+        latent = svd.fit_transform(matrix)
+        reconstructed = np.dot(latent, svd.components_)
+
+        scaler = MinMaxScaler(feature_range=(0.5, 5))
+        reconstructed = scaler.fit_transform(reconstructed)
+
+        preds = pd.DataFrame(
+            reconstructed,
+            index=matrix.index,
+            columns=matrix.columns
+        )
+
+        top_ids = (
+            preds.loc[user_id]
+            .sort_values(ascending=False)
+            .head(n)
+            .index
+        )
+
+        return df[df["movieId"].isin(top_ids)]["title"].unique()
+
+    except Exception as e:
+        st.error("⚠️ Collaborative filtering failed safely.")
+        st.code(str(e))
+        return []
 
 # --------------------------------------------------
-# STREAMLIT UI
+# UI
 # --------------------------------------------------
 choice = st.radio(
     "Select Recommendation Type",
@@ -99,7 +101,7 @@ if choice == "Content-Based (Genres)":
     movie = st.selectbox("Select Movie", sorted(df["title"].unique()))
     if st.button("Recommend"):
         recs = content_recommend(movie)
-        if len(recs) == 0:
+        if not recs.any():
             st.warning("No recommendations found.")
         else:
             st.success("Recommended Movies:")
@@ -117,11 +119,13 @@ else:
     if st.button("Recommend"):
         recs = svd_recommend(user)
         if recs is None:
-            st.warning("User ID not found in training data.")
+            st.warning("User ID not found.")
+        elif len(recs) == 0:
+            st.warning("No recommendations generated.")
         else:
             st.success("Recommended Movies:")
             for i, m in enumerate(recs, 1):
                 st.write(f"{i}. {m}")
 
 st.markdown("---")
-st.caption("TF-IDF Content Filtering + Robust SVD Collaborative Filtering")
+st.caption("TF-IDF Content Filtering + Robust On-Demand SVD Collaborative Filtering")
